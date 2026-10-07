@@ -1,134 +1,96 @@
 <!DOCTYPE html>
 <html lang="zh-TW">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>員工打卡系統</title>
-    <!-- 引入 LINE LIFF SDK -->
-    <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>企業安全打卡系統</title>
     <style>
-        body { font-family: sans-serif; text-align: center; padding-top: 50px; background-color: #f4f4f4; }
-        #clockInBtn {
-            background-color: #00B900; color: white; border: none;
-            padding: 15px 40px; font-size: 20px; border-radius: 8px;
-            cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        }
-        #clockInBtn:disabled { background-color: #ccc; cursor: not-allowed; }
-        #status { margin-top: 20px; color: #333; font-size: 16px; }
+        body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #f4f6f9; text-align: center; padding: 40px 20px; margin: 0; }
+        .card { background: white; padding: 35px 25px; border-radius: 20px; box-shadow: 0 10px 25px rgba(0,0,0,0.08); max-width: 380px; margin: 0 auto; }
+        h2 { color: #111; margin-bottom: 10px; font-size: 24px; }
+        p { color: #666; font-size: 15px; margin-bottom: 25px; }
+        input { width: 85%; padding: 12px; font-size: 16px; border-radius: 10px; border: 1px solid #ddd; margin-bottom: 20px; text-align: center; }
+        .btn { background: #06C755; color: white; border: none; width: 100%; padding: 16px; font-size: 18px; font-weight: bold; border-radius: 12px; cursor: pointer; box-shadow: 0 4px 12px rgba(6,199,85,0.3); margin-top: 10px; }
+        .btn-warn { background: #FF9500; box-shadow: 0 4px 12px rgba(255,149,0,0.3); display: none; }
+        #log { margin-top: 20px; font-size: 14px; color: #666; line-height: 1.5; }
     </style>
 </head>
 <body>
-
-    <h2>出勤打卡</h2>
-    <button id="clockInBtn" disabled>系統載入中...</button>
-    <div id="status">正在初始化 LINE 環境...</div>
+    <div class="card">
+        <h2>🏢 辦公室安全打卡</h2>
+        <p>請輸入您的姓名，靠近電腦進行藍牙驗證打卡</p>
+        
+        <input type="text" id="empName" placeholder="請輸入您的姓名"><br>
+        <button class="btn" onclick="performCheckIn('checkin')">🔍 藍牙感應打卡</button>
+        <button class="btn btn-warn" id="transferBtn" onclick="performCheckIn('request_transfer')">🔄 申請更換新手機</button>
+        
+        <div id="log">系統就緒</div>
+    </div>
 
     <script>
-        // 填寫您的 LIFF ID
-        const myLiffId = "2011911770-ByTrOOIU"; 
-        
-        // 未來第三階段完成 GAS 部署後，將 Webhook 網址貼到這裡
-        const gasWebhookUrl = "https://script.google.com/macros/s/AKfycbyeB1EHjY9Ycob_9SDC40PNRd-MEJEjHbkEJSR_lLI1jeAbxv_42czPf0eHixikN4-_/exec"; 
+        const GAS_URL = "https://script.google.com/macros/s/AKfycbyeB1EHjY9Ycob_9SDC40PNRd-MEJEjHbkEJSR_lLI1jeAbxv_42czPf0eHixikN4-_/exec";
+        const TARGET_UUID = "12345678-1234-5678-1234-567812345678"; // 您 Python 發射的 UUID
 
-        const btn = document.getElementById('clockInBtn');
-        const statusDiv = document.getElementById('status');
-
-        // 1. 初始化 LIFF
-        async function initializeLiff() {
-            try {
-                await liff.init({ liffId: myLiffId });
-                if (!liff.isLoggedIn()) {
-                    liff.login(); // 若未登入則引導登入
-                } else {
-                    btn.innerText = "點擊打卡";
-                    btn.disabled = false;
-                    statusDiv.innerText = "環境準備就緒，可進行打卡。";
-                }
-            } catch (err) {
-                statusDiv.innerText = "LIFF 初始化失敗：" + err.message;
+        // 取得或產生此手機專屬的唯一裝置碼 (Device ID)
+        function getDeviceId() {
+            let devId = localStorage.getItem("company_device_id");
+            if (!devId) {
+                devId = 'dev_' + Math.random().toString(36).substring(2) + Date.now().toString(36);
+                localStorage.setItem("company_device_id", devId);
             }
+            return devId;
         }
 
-        // 2. 獲取公網 IP
-        async function getPublicIp() {
-            try {
-                const res = await fetch('https://api.ipify.org?format=json');
-                const data = await res.json();
-                return data.ip;
-            } catch (err) {
-                return "unknown"; // 容錯處理，避免抓不到 IP 整個卡死
+        async function performCheckIn(action) {
+            const name = document.getElementById("empName").value.trim();
+            const logDiv = document.getElementById("log");
+
+            if (!name) {
+                alert("請先填寫您的姓名！");
+                return;
             }
-        }
 
-        // 3. 獲取 GPS 座標
-        function getGpsCoords() {
-            return new Promise((resolve, reject) => {
-                if (!navigator.geolocation) {
-                    reject("您的裝置不支援地理位置功能。");
-                }
-                navigator.geolocation.getCurrentPosition(
-                    (position) => resolve({ lat: position.coords.latitude, lng: position.coords.longitude }),
-                    (error) => reject("請開啟手機 GPS 定位權限。"),
-                    { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 } // 強制高精度無快取
-                );
-            });
-        }
-
-        // 打卡按鈕點擊事件
-        btn.addEventListener('click', async () => {
-            btn.disabled = true;
-            statusDiv.innerText = "正在取得定位與 IP 資訊...";
+            logDiv.innerText = "📡 正在搜尋周遭藍牙基地台...";
 
             try {
-                // 抓取 LINE 使用者資料
-                const profile = await liff.getProfile();
-                
-                // 平行抓取 IP 與 GPS (節省等待時間)
-                const [ip, coords] = await Promise.all([getPublicIp(), getGpsCoords()]);
-
-                statusDiv.innerText = "資料讀取完成，正在上傳至雲端...";
-
-                // 打包準備送給 GAS 的 JSON
-                const payload = {
-                    uid: profile.userId,
-                    displayName: profile.displayName,
-                    ip: ip,
-                    lat: coords.lat,
-                    lng: coords.lng
-                };
-
-                // 若還沒設定 GAS URL，先在前端印出結果測試
-                if (gasWebhookUrl === "YOUR_GAS_WEBHOOK_URL") {
-                    statusDiv.innerText = `[測試模式成功] \nName: ${payload.displayName} \nIP: ${payload.ip} \nLat: ${payload.lat}, Lng: ${payload.lng}`;
-                    btn.disabled = false;
+                // 1. 強制藍牙感應：必須搜尋到公司的 iBeacon 訊號才代表人在現場
+                if (!navigator.bluetooth) {
+                    alert("您的瀏覽器不支援藍牙，請使用 Chrome 或 Bluefy 瀏覽器！");
                     return;
                 }
 
-                // 傳送資料到 GAS
-                const response = await fetch(gasWebhookUrl, {
-                    method: 'POST',
-                    body: JSON.stringify(payload),
-                    headers: { 'Content-Type': 'text/plain;charset=utf-8' } // 避開 CORS 預檢請求
+                const device = await navigator.bluetooth.requestDevice({
+                    filters: [{ services: [TARGET_UUID.toLowerCase()] }]
                 });
 
+                logDiv.innerText = "✅ 藍牙驗證成功！正在向伺服器核對身分...";
+
+                // 2. 準備送出打卡與裝置碼
+                const deviceId = getDeviceId();
+                let targetUrl = `${GAS_URL}?name=${encodeURIComponent(name)}&deviceId=${deviceId}&action=${action}`;
+
+                const response = await fetch(targetUrl);
                 const result = await response.json();
-                
+
                 if (result.status === "success") {
-                    statusDiv.innerText = "打卡成功！";
-                    setTimeout(() => liff.closeWindow(), 2000); // 成功後兩秒自動關閉視窗
+                    logDiv.innerText = "🎉 " + result.message;
+                    alert(result.message);
+                    document.getElementById("transferBtn").style.display = "none";
+                } else if (result.status === "device_mismatch") {
+                    logDiv.innerText = "⚠️ " + result.message;
+                    alert(result.message);
+                    // 顯示換機申請按鈕
+                    document.getElementById("transferBtn").style.display = "block";
                 } else {
-                    statusDiv.innerText = "打卡失敗：" + result.message;
-                    btn.disabled = false;
+                    logDiv.innerText = "ℹ️ " + result.message;
+                    alert(result.message);
                 }
 
-            } catch (err) {
-                statusDiv.innerText = "錯誤：" + err;
-                btn.disabled = false;
+            } catch (error) {
+                console.error(error);
+                logDiv.innerText = "❌ 打卡取消或未偵測到公司藍牙訊號。\n(請確認人是否在電腦旁)";
             }
-        });
-
-        // 啟動程式
-        initializeLiff();
+        }
     </script>
 </body>
 </html>
